@@ -30,7 +30,7 @@ inline char ToUpper(char c) {
 
 static std::string GeneratedFileName(const std::string &path,
                                      const std::string &file_name) {
-  return path + file_name + "_generated.h";
+  return path + file_name + ".hpp";
 }
 
 namespace cpp {
@@ -1295,6 +1295,29 @@ class CppGenerator : public BaseGenerator {
                   ": nullptr;";
           code_ += "  }";
         }
+
+        code_ += "  template<typename THandler>";
+        code_ += "  void " + field.name + "_receive(THandler &handler) const {";
+        code_ += "    switch (" + field.name + "_type()) {";
+        for (auto u_it = u->vals.vec.begin();
+             u_it != u->vals.vec.end(); ++u_it) {
+          auto &ev = **u_it;
+          if (ev.union_type.base_type == BASE_TYPE_NONE) {
+            continue;
+          }
+          auto full_struct_name = GetUnionElement(ev, true, true);
+          code_.SetValue("U_ELEMENT_TYPE", WrapInNameSpace(
+                         u->defined_namespace, GetEnumValUse(*u, ev)));
+          code_.SetValue("U_FIELD_NAME",
+                         field.name + "_as_" + ev.name);
+          code_ += "    case {{U_ELEMENT_TYPE}}:";
+          code_ += "      handler.receive({{U_FIELD_NAME}}());";
+          code_ += "      break;";
+        }
+        code_ += "    default:";
+        code_ += "      break;";
+        code_ += "    }";
+        code_ += "  }";
       }
 
       if (parser_.opts.mutable_buffer) {
