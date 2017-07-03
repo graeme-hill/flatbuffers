@@ -336,11 +336,16 @@ class CppGenerator : public BaseGenerator {
   // Return a C++ type for any type (scalar/pointer) specifically for
   // building a flatbuffer.
   std::string GenTypeWire(const Type &type, const char *postfix,
-                          bool user_facing_type) const {
+                          bool user_facing_type,
+                          bool prefer_by_value = false) const {
     if (IsScalar(type.base_type)) {
       return GenTypeBasic(type, user_facing_type) + postfix;
     } else if (IsStruct(type)) {
-      return "const " + GenTypePointer(type) + " *";
+      if (prefer_by_value) {
+        return GenTypePointer(type) + " ";
+      } else {
+        return "const " + GenTypePointer(type) + " *";
+      }
     } else {
       return "flatbuffers::Offset<" + GenTypePointer(type) + ">" + postfix;
     }
@@ -1040,6 +1045,21 @@ class CppGenerator : public BaseGenerator {
     code_ += "{{PRE}}{{PARAM_TYPE}}{{PARAM_NAME}} = {{PARAM_VALUE}}\\";
   }
 
+  void GenParamByVal(const FieldDef &field, bool direct, const char *prefix) {
+    code_.SetValue("PRE", prefix);
+    code_.SetValue("PARAM_NAME", field.name);
+    if (direct && field.value.type.base_type == BASE_TYPE_STRING) {
+      code_.SetValue("PARAM_TYPE", "const char *");
+    } else if (direct && field.value.type.base_type == BASE_TYPE_VECTOR) {
+      auto type = GenTypeWire(field.value.type.VectorType(), "", false);
+      code_.SetValue("PARAM_TYPE", "const std::vector<" + type + "> *");
+    } else {
+      code_.SetValue("PARAM_TYPE",
+        GenTypeWire(field.value.type, " ", true, true));
+    }
+    code_ += "{{PRE}}{{PARAM_TYPE}}{{PARAM_NAME}}\\";
+  }
+
   // Generate a member, including a default value for scalars and raw pointers.
   void GenMember(const FieldDef &field) {
     if (!field.deprecated &&  // Deprecated fields won't be accessible.
@@ -1296,6 +1316,8 @@ class CppGenerator : public BaseGenerator {
           code_ += "  }";
         }
 
+        // Generate a function that will dispatch a different handler depending
+        // on the union type.
         code_ += "  template<typename THandler>";
         code_ += "  void " + field.name + "_receive(THandler &handler) const {";
         code_ += "    switch (" + field.name + "_type()) {";
@@ -1486,6 +1508,8 @@ class CppGenerator : public BaseGenerator {
     code_ += "  flatbuffers::uoffset_t start_;";
 
     bool has_string_or_vector_fields = false;
+    unsigned union_field_count = 0;
+    const flatbuffers::FieldDef *single_union_field = nullptr;
     for (auto it = struct_def.fields.vec.begin();
          it != struct_def.fields.vec.end(); ++it) {
       const auto &field = **it;
@@ -1495,6 +1519,14 @@ class CppGenerator : public BaseGenerator {
         const bool is_vector = field.value.type.base_type == BASE_TYPE_VECTOR;
         if (is_string || is_vector) {
           has_string_or_vector_fields = true;
+        }
+        if (field.value.type.base_type == BASE_TYPE_UNION) {
+          union_field_count++;
+          if (union_field_count == 1) {
+              single_union_field = &field;
+          } else {
+              single_union_field = nullptr;
+          }
         }
 
         std::string offset = GenFieldOffsetName(field);
@@ -1590,6 +1622,70 @@ class CppGenerator : public BaseGenerator {
     code_ += "  return builder_.Finish();";
     code_ += "}";
     code_ += "";
+
+    // Generate a union friendly version of CreateX if there is exactly one
+    // union field.
+    if (single_union_field != nullptr) {
+      auto u = single_union_field->value.type.enum_def;
+      for (auto u_it = u->vals.vec.begin();
+           u_it != u->vals.vec.end(); ++u_it) {
+        auto &ev = **u_it;
+        if (ev.union_type.base_type == BASE_TYPE_NONE) {
+          continue;
+        }
+        if (ev.union_type.struct_def == nullptr) {
+          continue;
+        }
+        code_.SetValue("U_NM", ev.name);
+        code_.SetValue("DETACHED", "flatbuffers::DetachedBuffer");
+        code_ += "inline {{DETACHED}} Create{{U_NM}}{{STRUCT_NAME}}(";
+        auto sep = "    ";
+        bool child_has_string_or_vector_fields = false;
+        for (auto it = ev.union_type.struct_def->fields.vec.begin();
+             it != ev.union_type.struct_def->fields.vec.end(); ++it) {
+          const auto &field = **it;
+          if (!field.deprecated) {
+            const bool is_string = field.value.type.base_type == BASE_TYPE_STRING;
+            const bool is_vector = field.value.type.base_type == BASE_TYPE_VECTOR;
+            if (is_string || is_vector) {
+              child_has_string_or_vector_fields = true;
+            }
+
+            GenParamByVal(field, true, sep);
+            sep = ",\n    ";
+          }
+        }
+        code_ += ") {";
+        code_ += "  flatbuffers::FlatBufferBuilder fbb;";
+        if (child_has_string_or_vector_fields) {
+          code_ += "  auto inner = Create{{U_NM}}Direct(";
+        } else {
+          code_ += "  auto inner = Create{{U_NM}}(";
+        }
+        code_ += "    fbb,";
+        for (auto it = ev.union_type.struct_def->fields.vec.begin();
+             it != ev.union_type.struct_def->fields.vec.end(); ++it) {
+          const auto &field = **it;
+          bool last = it == ev.union_type.struct_def->fields.vec.end() - 1;
+          if (!field.deprecated) {
+            std::string addressOfPrefix = IsStruct(field.value.type) ? "&" : "";
+            code_.SetValue("PARAM_NAME", addressOfPrefix + field.name);
+            if (last) {
+              code_ += "    {{PARAM_NAME}});";
+            } else {
+              code_ += "    {{PARAM_NAME}},";
+            }
+          }
+        }
+        code_.SetValue("U_ELEMENT_TYPE", WrapInNameSpace(
+                       u->defined_namespace, GetEnumValUse(*u, ev)));
+        code_ += "  auto outer = Create{{STRUCT_NAME}}(fbb, {{U_ELEMENT_TYPE}}, inner.Union());";
+        code_ += "  fbb.Finish(outer);";
+        code_ += "  return fbb.ReleaseBufferPointer();";
+        code_ += "}";
+        code_ += "";
+      }
+    }
 
     // Generate a CreateXDirect function with vector types as parameters
     if (has_string_or_vector_fields) {
