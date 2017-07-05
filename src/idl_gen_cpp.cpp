@@ -1328,12 +1328,13 @@ class CppGenerator : public BaseGenerator {
             continue;
           }
           auto full_struct_name = GetUnionElement(ev, true, true);
+          code_.SetValue("U_NM", ev.name);
           code_.SetValue("U_ELEMENT_TYPE", WrapInNameSpace(
                          u->defined_namespace, GetEnumValUse(*u, ev)));
           code_.SetValue("U_FIELD_NAME",
                          field.name + "_as_" + ev.name);
           code_ += "    case {{U_ELEMENT_TYPE}}:";
-          code_ += "      handler.receive({{U_FIELD_NAME}}());";
+          code_ += "      handler.on{{U_NM}}({{U_FIELD_NAME}}());";
           code_ += "      break;";
         }
         code_ += "    default:";
