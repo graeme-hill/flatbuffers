@@ -1639,44 +1639,67 @@ class CppGenerator : public BaseGenerator {
         }
         code_.SetValue("U_NM", ev.name);
         code_.SetValue("DETACHED", "flatbuffers::DetachedBuffer");
-        code_ += "inline {{DETACHED}} Create{{U_NM}}{{STRUCT_NAME}}(";
-        auto sep = "    ";
-        bool child_has_string_or_vector_fields = false;
+        bool anyFields = false;
         for (auto it = ev.union_type.struct_def->fields.vec.begin();
              it != ev.union_type.struct_def->fields.vec.end(); ++it) {
           const auto &field = **it;
           if (!field.deprecated) {
-            const bool is_string = field.value.type.base_type == BASE_TYPE_STRING;
-            const bool is_vector = field.value.type.base_type == BASE_TYPE_VECTOR;
-            if (is_string || is_vector) {
-              child_has_string_or_vector_fields = true;
-            }
-
-            GenParamByVal(field, true, sep);
-            sep = ",\n    ";
+            anyFields = true;
           }
         }
-        code_ += ") {";
+
+        bool child_has_string_or_vector_fields = false;
+        if (anyFields)
+        {
+          code_ += "inline {{DETACHED}} Create{{U_NM}}{{STRUCT_NAME}}(";
+          auto sep = "    ";
+          for (auto it = ev.union_type.struct_def->fields.vec.begin();
+               it != ev.union_type.struct_def->fields.vec.end(); ++it) {
+            const auto &field = **it;
+            if (!field.deprecated) {
+              const bool is_string = field.value.type.base_type == BASE_TYPE_STRING;
+              const bool is_vector = field.value.type.base_type == BASE_TYPE_VECTOR;
+              if (is_string || is_vector) {
+                child_has_string_or_vector_fields = true;
+              }
+
+              GenParamByVal(field, true, sep);
+              sep = ",\n    ";
+            }
+          }
+          code_ += ") {";
+        }
+        else
+        {
+          code_ += "inline {{DETACHED}} Create{{U_NM}}{{STRUCT_NAME}}() {";
+        }
         code_ += "  flatbuffers::FlatBufferBuilder fbb;";
         if (child_has_string_or_vector_fields) {
-          code_ += "  auto inner = Create{{U_NM}}Direct(";
+          code_ += "  auto inner = Create{{U_NM}}Direct(\\";
         } else {
-          code_ += "  auto inner = Create{{U_NM}}(";
+          code_ += "  auto inner = Create{{U_NM}}(\\";
         }
-        code_ += "    fbb,";
-        for (auto it = ev.union_type.struct_def->fields.vec.begin();
-             it != ev.union_type.struct_def->fields.vec.end(); ++it) {
-          const auto &field = **it;
-          bool last = it == ev.union_type.struct_def->fields.vec.end() - 1;
-          if (!field.deprecated) {
-            std::string addressOfPrefix = IsStruct(field.value.type) ? "&" : "";
-            code_.SetValue("PARAM_NAME", addressOfPrefix + field.name);
-            if (last) {
-              code_ += "    {{PARAM_NAME}});";
-            } else {
-              code_ += "    {{PARAM_NAME}},";
+
+        if (anyFields) {
+          code_ += "\n    fbb,";
+          for (auto it = ev.union_type.struct_def->fields.vec.begin();
+               it != ev.union_type.struct_def->fields.vec.end(); ++it) {
+            const auto &field = **it;
+            bool last = it == ev.union_type.struct_def->fields.vec.end() - 1;
+            if (!field.deprecated) {
+              std::string addressOfPrefix = IsStruct(field.value.type) ? "&" : "";
+              code_.SetValue("PARAM_NAME", addressOfPrefix + field.name);
+              if (last) {
+                code_ += "    {{PARAM_NAME}});";
+              } else {
+                code_ += "    {{PARAM_NAME}},";
+              }
             }
           }
+        }
+        else
+        {
+          code_ += "fbb);";
         }
         code_.SetValue("U_ELEMENT_TYPE", WrapInNameSpace(
                        u->defined_namespace, GetEnumValUse(*u, ev)));
